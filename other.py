@@ -1,10 +1,12 @@
+import os
 import cv2
 import numpy as np
+import string
+from sklearn.preprocessing import LabelBinarizer
 import tensorflow as tf
 from tensorflow.keras import layers, models
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
-import os
-from sklearn.preprocessing import LabelBinarizer
+from tensorflow.keras.callbacks import EarlyStopping
 
 # Preprocess the image (grayscale, blur, binarize)
 def preprocess_image(image_path):
@@ -15,10 +17,10 @@ def preprocess_image(image_path):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
     # Resize to a fixed size (e.g., 28x28 pixels or the original size of your dataset, 80x215 in this case)
-    resized_image = cv2.resize(gray, (215, 80))  # Resize to your specific dimensions
+    # resized_image = cv2.resize(gray, (215, 80))  # Resize to your specific dimensions
     
     # Normalize the image (scale pixel values to [0, 1])
-    normalized_image = resized_image.astype('float32') / 255.0
+    normalized_image = gray.astype('float32') / 255.0
     
     # Expand dimensions to match the input shape for CNN (height, width, 1)
     expanded_image = np.expand_dims(normalized_image, axis=-1)  # Add a channel dimension for grayscale
@@ -34,24 +36,38 @@ def segment_characters(binary_image):
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
         char = binary_image[y:y+h, x:x+w]
-        char_resized = cv2.resize(char, (28, 28))
+        char_resized = cv2.resize(char, (215, 80))
         characters.append(char_resized)
     return characters
 
 # Build the CRNN model
 def build_crnn(input_shape,num_characters, num_classes):
     model = models.Sequential()
+    # Convolutional layers with regularization
     model.add(layers.Conv2D(32, (3, 3), activation='relu', input_shape=input_shape))
     model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Dropout(0.25))  # Dropout to avoid overfitting
+    
     model.add(layers.Conv2D(64, (3, 3), activation='relu'))
     model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Dropout(0.25))
+
     model.add(layers.Conv2D(128, (3, 3), activation='relu'))
-    model.add(layers.Reshape((-1, 128)))  # Flatten
-    model.add(layers.Bidirectional(layers.LSTM(128, return_sequences=True)))
-    model.add(layers.Bidirectional(layers.LSTM(64, return_sequences=False)))
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Dropout(0.25))
+    
+    # Flatten and fully connected layers
+    model.add(layers.Flatten())
     model.add(layers.Dense(128, activation='relu'))
+    model.add(layers.Dropout(0.5))  # More dropout in the dense layer
+
+    # Output layer for multiple characters (num_characters * num_classes)
     model.add(layers.Dense(num_characters * num_classes, activation='softmax'))
-    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+
+    # Compile the model
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), 
+                  loss='categorical_crossentropy', metrics=['accuracy'])
+    
     return model
 
 # Train the model
@@ -65,9 +81,12 @@ def train_model(train_images, train_labels, val_images, val_labels, num_characte
         shear_range=0.2, zoom_range=0.2, fill_mode='nearest'
     )
     
-    # Fit the model
-    model.fit(datagen.flow(train_images, train_labels, batch_size=32), 
-              epochs=50, validation_data=(val_images, val_labels))
+    early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+    
+     # Train the model with data augmentation
+    model.fit(datagen.flow(train_images, train_labels, batch_size=2),
+              epochs=50, validation_data=(val_images, val_labels),
+              callbacks=[early_stopping])
     return model
 
 # Example function to break a CAPTCHA using the trained model
@@ -105,14 +124,13 @@ def load_dataset(folder_path, num_classes=36):
         # Append the image and label to their respective lists        
         images.append(preprocessed_image)
         
-        # One-hot encode the label
-        one_hot_labels = []
-        for char in label:
-            one_hot = label_binarizer.transform([char])  # One-hot encode each character
-            one_hot_labels.append(one_hot.flatten())
-        # Flatten the one-hot labels for all characters into a single array
-        flattened_label = np.concatenate(one_hot_labels)
+        # One-hot encode each character in the label
+        one_hot_labels = [label_binarizer.transform([char]).flatten() for char in label]
         
+        # Flatten the one-hot encoded labels and ensure they match the expected number of characters
+        flattened_label = np.concatenate(one_hot_labels[:num_characters])
+        
+        # Append the label to the labels list
         labels.append(flattened_label)
     
     # Convert lists to numpy arrays
