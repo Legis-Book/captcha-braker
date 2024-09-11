@@ -34,6 +34,6 @@ def extract_numbers_from_image(image_path):
     return numbers
 
 # Example usage
-image_path = 'path_to_image_with_numbers.jpg'
+image_path = './securimage_show.png'
 numbers = extract_numbers_from_image(image_path)
 print(f"Extracted Numbers: {numbers}")
